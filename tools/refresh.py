@@ -87,13 +87,15 @@ def load_entities(name):
 # ---------------- sales (full rebuild from CSV) ----------------
 def product_group(p):
     s = p.lower()
-    if 'verlatingsangst' in s or 'samen sterk' in s or 'implementatie' in s or 'separation' in s:
-        return 'Verlatingsangst / Separation'
-    if 'vuurwerk' in s: return 'Vuurwerkangst'
-    if 'noise' in s: return 'Noise Phobia'
-    if 'fearless' in s: return 'Fearless Dogs'
-    if 'stress' in s: return 'Stress Management'
-    if 'emotion' in s or 'emoties' in s: return 'Emotions & Behaviour'
+    if 'verlatingsangst' in s or 'samen sterk' in s or 'implementatie' in s:
+        return 'Verlatingsangst (NL)'
+    if 'separation' in s: return 'Separation Anxiety (EN)'
+    if 'vuurwerk' in s: return 'Vuurwerkangst (NL)'
+    if 'noise' in s: return 'Noise Phobia (EN)'
+    if 'fearless' in s: return 'Fearless Dogs (EN)'
+    if 'stress' in s: return 'Stress Management (NL)'
+    if 'emotion' in s: return 'Emotions (EN)'
+    if 'emotie' in s: return 'Emoties (NL)'
     return 'Other'
 
 def parse_products(cell):
@@ -116,6 +118,7 @@ def rebuild_sales(payload):
             try: dt = datetime.strptime(row['Date'].strip(), '%Y-%m-%d %H:%M:%S')
             except ValueError: continue
             prods = parse_products(row['Product'])
+            if prods and prods[0].lower() == 'test': continue  # exclude test purchases
             orders.append({
                 'date': dt.strftime('%Y-%m-%d'), 'ts': dt.isoformat(),
                 'name': (row.get('Name') or '').strip(), 'email': (row.get('email') or '').strip().lower(),
