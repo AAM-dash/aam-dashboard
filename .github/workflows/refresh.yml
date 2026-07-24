@@ -4,8 +4,8 @@ on:
   workflow_dispatch: {}
   # Enabled once Kit / Meta / Google secrets are all confirmed working via a
   # manual run above -- see tools/RUNBOOK.md.
-  # schedule:
-  #   - cron: '0 * * * *'
+  schedule:
+    - cron: '0 * * * *'
 
 permissions:
   contents: write
