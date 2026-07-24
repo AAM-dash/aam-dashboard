@@ -1,0 +1,56 @@
+name: Refresh AAM dashboard
+
+on:
+  workflow_dispatch: {}
+  # Enabled once Kit / Meta / Google secrets are all confirmed working via a
+  # manual run above -- see tools/RUNBOOK.md.
+  # schedule:
+  #   - cron: '0 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: aam-dashboard-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install --quiet cryptography requests google-auth
+
+      - name: Fetch raw data (Kit / Meta / Google Sheets)
+        env:
+          KIT_API_KEY: ${{ secrets.KIT_API_KEY }}
+          META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+          META_AD_ACCOUNT_ID: "263286035984952"
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SALES_SHEET_ID: "1dK0T2KJJ5JOPXidnCfuWEhg8kWmOuViezPdCwCD99xk"
+        run: python3 tools/fetch_data.py
+
+      - name: Rebuild encrypted dashboard
+        env:
+          DASH_PASSWORD: ${{ secrets.DASH_PASSWORD }}
+        run: |
+          cd tools
+          python3 refresh.py
+
+      - name: Commit and push if changed
+        run: |
+          git config user.email "dashboard-bot@users.noreply.github.com"
+          git config user.name "Dashboard refresh"
+          git add index.html
+          if git diff --cached --quiet; then
+            echo "No changes to publish"
+          else
+            git commit -m "data refresh $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git push
+          fi
