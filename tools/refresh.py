@@ -91,7 +91,10 @@ def product_group(p):
         return 'Verlatingsangst (NL)'
     if 'separation' in s: return 'Separation Anxiety (EN)'
     if 'vuurwerk' in s: return 'Vuurwerkangst (NL)'
+    if 'geluidsangst' in s: return 'Geluidsangst (NL)'
     if 'noise' in s: return 'Noise Phobia (EN)'
+    if 'bootcamp' in s: return 'Bootcamp (NL)'
+    if 'happy dog' in s: return 'Happy Dog'
     if 'fearless' in s: return 'Fearless Dogs (EN)'
     if 'stress' in s: return 'Stress Management (NL)'
     if 'emotion' in s: return 'Emotions (EN)'
@@ -108,28 +111,94 @@ def money(v):
     try: return float(v) if v else 0.0
     except ValueError: return 0.0
 
-def rebuild_sales(payload):
-    p = os.path.join(WORK, "sales.csv")
-    if not os.path.exists(p): return None
-    orders = []
-    with open(p) as f:
-        for row in csv.DictReader(f):
-            if not row.get('Date') or not row.get('Amount'): continue
-            try: dt = datetime.strptime(row['Date'].strip(), '%Y-%m-%d %H:%M:%S')
-            except ValueError: continue
+def _parse_sales_file(path, src):
+    """Parse one payments sheet CSV. Handles both formats:
+    - legacy Zapier sheet: Date '2025-09-18 11:47:32' (local), column 'Payment amount',
+      Amount is the gross EUR charge ('€497.00').
+    - Make.com sheet ('Thrivecart payments 2026'): Date ISO UTC '2026-08-21T13:25:31.000Z',
+      column 'Payment amount in SEK', Amount is ex-VAT — gross lives in 'Total'.
+    Returns (orders, skipped_bad_date)."""
+    orders, bad_dates = [], 0
+    with open(path) as f:
+        reader = csv.DictReader(f)
+        is_new = 'Payment amount in SEK' in (reader.fieldnames or [])
+        for row in reader:
+            email = (row.get('email') or '').strip().lower()
+            if not row.get('Date') or not (row.get('Amount') or '').strip(): continue
+            if '+test' in email: continue  # Else's own test purchases in the Make sheet
+            raw_date = row['Date'].strip()
+            try:
+                if is_new:
+                    dt = datetime.fromisoformat(raw_date.replace('Z', '+00:00')).astimezone(TZ).replace(tzinfo=None)
+                else:
+                    dt = datetime.strptime(raw_date, '%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                bad_dates += 1
+                continue
             prods = parse_products(row['Product'])
             if prods and prods[0].lower() == 'test': continue  # exclude test purchases
+            if is_new:
+                amount = money(row.get('Total') or '') or money(row['Amount'])
+                sek = money(row.get('Payment amount in SEK', ''))
+            else:
+                amount = money(row['Amount'])
+                sek = money(row.get('Payment amount', ''))
+            if amount <= 0 and sek <= 0: continue
             orders.append({
-                'date': dt.strftime('%Y-%m-%d'), 'ts': dt.isoformat(),
-                'name': (row.get('Name') or '').strip(), 'email': (row.get('email') or '').strip().lower(),
+                'date': dt.strftime('%Y-%m-%d'), 'ts': dt.isoformat(), 'dt': dt, 'src': src,
+                'name': (row.get('Name') or '').strip(), 'email': email,
                 'country': (row.get('Country') or '').strip(),
                 'currency': (row.get('Currency') or 'eur').strip().lower(),
-                'amount': money(row['Amount']), 'sek': money(row.get('Payment amount', '')),
+                'amount': amount, 'sek': sek,
                 'products': prods, 'group': product_group(prods[0]) if prods else 'Other',
                 'refunded': (row.get('refunded') or '0').strip() not in ('0', '', 'none'),
             })
-    if len(orders) < 50:  # sanity guard: a broken export must not wipe history
-        print(f"WARNING: only {len(orders)} orders parsed — keeping previous sales data"); return None
+    return orders, bad_dates
+
+def rebuild_sales(payload):
+    p1 = os.path.join(WORK, "sales.csv")   # legacy Zapier sheet (history + rebills)
+    p2 = os.path.join(WORK, "sales2.csv")  # Make.com sheet (Aug-Oct 2026)
+    if not os.path.exists(p1) and not os.path.exists(p2): return None
+    old_orders, old_bad = _parse_sales_file(p1, 'zapier') if os.path.exists(p1) else ([], 0)
+    if os.path.exists(p2):
+        new_orders, new_bad = _parse_sales_file(p2, 'make')
+        # persist a compact copy inside the payload, so a later refresh that cannot
+        # read the Make sheet (e.g. not shared with the service account) does not
+        # silently lose these orders
+        payload['makeOrders'] = [
+            {k: o[k] for k in ('ts','name','email','country','currency','amount','sek','products','refunded')}
+            for o in new_orders]
+    else:
+        new_bad = 0
+        new_orders = []
+        for m in payload.get('makeOrders', []):
+            dt = datetime.fromisoformat(m['ts'])
+            new_orders.append({**m, 'dt': dt, 'date': dt.strftime('%Y-%m-%d'), 'src': 'make-cached',
+                               'group': product_group(m['products'][0]) if m['products'] else 'Other'})
+        if new_orders:
+            print(f"sales2.csv missing — reusing {len(new_orders)} cached Make orders from payload")
+    if os.path.exists(p1) and len(old_orders) < 50:  # sanity guard: broken export must not wipe history
+        print(f"WARNING: only {len(old_orders)} orders in legacy sheet — keeping previous sales data"); return None
+    # De-duplicate: both pipelines can capture the same payment. Keep the Zapier copy;
+    # drop a Make row when the same email has a Zapier payment of (nearly) the same
+    # size within 2 days. Monthly installments are ~30 days apart, so they survive.
+    by_email = defaultdict(list)
+    for o in old_orders: by_email[o['email']].append(o)
+    deduped, dropped = [], 0
+    for n in new_orders:
+        dup = False
+        for o in by_email.get(n['email'], []):
+            close_time = abs((o['dt'] - n['dt']).total_seconds()) <= 2 * 86400
+            if not close_time: continue
+            if n['sek'] > 0 and o['sek'] > 0:
+                if abs(o['sek'] - n['sek']) <= 2: dup = True; break
+            elif abs(o['amount'] - n['amount']) <= 0.5: dup = True; break
+        if dup: dropped += 1
+        else: deduped.append(n)
+    orders = old_orders + deduped
+    for o in orders: o.pop('dt', None)
+    print(f"sales merge: {len(old_orders)} zapier + {len(new_orders)} make "
+          f"({dropped} duplicates dropped, {old_bad + new_bad} rows skipped for bad dates)")
     orders.sort(key=lambda o: o['ts'])
     fx_rows = [o['sek']/o['amount'] for o in orders if o['currency'] == 'eur' and o['amount'] > 0 and o['sek'] > 0]
     fx = round(statistics.median(fx_rows[-40:]), 4) if fx_rows else payload.get('fx', {}).get('eurSek', 11.0)

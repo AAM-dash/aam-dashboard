@@ -104,9 +104,12 @@ def fetch_kit_broadcasts():
 # ---------------- Google Sheets (service account) ----------------
 def fetch_sales_csv():
     sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
-    sheet_id = os.environ.get("SALES_SHEET_ID")
-    if not sa_json or not sheet_id:
-        print("skip sales.csv: missing GOOGLE_SERVICE_ACCOUNT_JSON or SALES_SHEET_ID")
+    targets = [
+        (os.environ.get("SALES_SHEET_ID"), "sales.csv"),        # legacy Zapier sheet (full history + rebills)
+        (os.environ.get("SALES_SHEET_ID_2"), "sales2.csv"),     # Make.com sheet (Aug-Oct 2026)
+    ]
+    if not sa_json:
+        print("skip sales*.csv: missing GOOGLE_SERVICE_ACCOUNT_JSON")
         return
     from google.oauth2 import service_account
     import google.auth.transport.requests
@@ -116,14 +119,23 @@ def fetch_sales_csv():
         info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
     )
     creds.refresh(google.auth.transport.requests.Request())
-    r = requests.get(
-        f"https://www.googleapis.com/drive/v3/files/{sheet_id}/export",
-        params={"mimeType": "text/csv"},
-        headers={"Authorization": f"Bearer {creds.token}"},
-        timeout=60,
-    )
-    r.raise_for_status()
-    save_text("sales.csv", r.text)
+    for sheet_id, fname in targets:
+        if not sheet_id:
+            print(f"skip {fname}: no sheet id configured")
+            continue
+        try:
+            r = requests.get(
+                f"https://www.googleapis.com/drive/v3/files/{sheet_id}/export",
+                params={"mimeType": "text/csv"},
+                headers={"Authorization": f"Bearer {creds.token}"},
+                timeout=60,
+            )
+            r.raise_for_status()
+            save_text(fname, r.text)
+        except Exception as e:
+            # a 403/404 here usually means the sheet is not shared with the
+            # service account yet; refresh.py keeps previous data for it
+            print(f"WARN {fname}: {e}")
 
 
 # ---------------- Meta ----------------
