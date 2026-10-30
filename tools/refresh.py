@@ -218,6 +218,38 @@ def _is_dup(n, candidates):
         elif any(abs(o['amount'] - a) <= 0.5 for a in [n['amount']] + list(n.get('alts', []))): return True
     return False
 
+def _sheet_has_tc(o, tcs):
+    """True if sheet order o pairs with any ThriveCart order in tcs (same rule as _is_dup,
+    which expects the ThriveCart order as its first argument)."""
+    return any(_is_dup(n, [o]) for n in tcs)
+
+def _tc_diagnose(tc_orders, sheet_orders, tc_added):
+    """PII-free diagnostics (counts and amounts only; the repo and its logs are public) on why
+    sheet orders and ThriveCart payments do or do not pair up."""
+    tc_by_email = defaultdict(list)
+    for n in tc_orders: tc_by_email[n['email']].append(n)
+    sh_emails = {o['email'] for o in sheet_orders}
+    first = min((n['dt'] for n in tc_orders), default=None)
+    unmatched = [o for o in sheet_orders if first and o['dt'] >= first
+                 and not _sheet_has_tc(o, tc_by_email.get(o['email'], []))]
+    in_tc = [o for o in unmatched if o['email'] in tc_by_email]
+    print(f"diag: sheet orders unmatched {len(unmatched)}; email also in ThriveCart: {len(in_tc)}; "
+          f"email not in ThriveCart at all: {len(unmatched) - len(in_tc)}")
+    days, ratios, ex = Counter(), Counter(), []
+    for o in in_tc:
+        near = min(tc_by_email[o['email']], key=lambda n: abs((n['dt'] - o['dt']).total_seconds()))
+        h = (near['dt'] - o['dt']).total_seconds() / 3600
+        days['<=2d' if abs(h) <= 48 else '<=10d' if abs(h) <= 240 else '>10d'] += 1
+        if abs(h) <= 48:
+            ratios[round(o['amount'] / near['amount'], 2) if near['amount'] else 0] += 1
+            if len(ex) < 12: ex.append((o['amount'], near['amount'], near['alts'][0], round(h, 1), o['currency'], o['sek']))
+    print("diag: nearest same-email ThriveCart row by date gap:", dict(days))
+    print("diag: sheet amount / ThriveCart ex-VAT amount (same email, <=2d):", dict(ratios.most_common(12)))
+    print("diag: examples (sheet amount, TC ex-VAT, TC gross, hours gap, sheet currency, sheet SEK):", ex)
+    tc_un = [n for n in tc_orders if n in tc_added]
+    print(f"diag: ThriveCart payments unmatched {len(tc_un)}; email in sheets: {sum(1 for n in tc_un if n['email'] in sh_emails)}")
+    print("diag: sheet email column sample shapes:", Counter(('has@' if '@' in o['email'] else 'no@', 'upper' if o['email'] != o['email'].lower() else 'lower') for o in sheet_orders[:200]))
+
 def rebuild_sales(payload):
     p1 = os.path.join(WORK, "sales.csv")   # legacy Zapier sheet (history + rebills)
     p2 = os.path.join(WORK, "sales2.csv")  # Make.com sheet (Aug-Oct 2026)
@@ -274,6 +306,7 @@ def rebuild_sales(payload):
         tc_total = len(tc_orders)
         tc_added = [n for n in tc_orders if not _is_dup(n, by_email.get(n['email'], []))]
         matched = tc_total - len(tc_added)
+        _tc_diagnose(tc_orders, sheet_orders, tc_added)
         if tc_total >= 50 and matched < 0.5 * tc_total:
             # the sheets cover most of these payments, so a low match rate means the matching
             # is broken (amount/currency/email format changed): add nothing rather than double count
@@ -286,7 +319,7 @@ def rebuild_sales(payload):
         # reconcile report (no names / emails)
         win_start = min((n['dt'] for n in tc_orders), default=None)
         sheet_only = [o for o in sheet_orders if win_start and o['dt'] >= win_start
-                      and not _is_dup(o, [n for n in tc_orders if n['email'] == o['email']])] if tc_orders else []
+                      and not _sheet_has_tc(o, [n for n in tc_orders if n['email'] == o['email']])] if tc_orders else []
         added_by_month = defaultdict(lambda: [0, 0.0])
         for n in tc_added:
             m = added_by_month[n['date'][:7]]; m[0] += 1; m[1] += n['amount']
