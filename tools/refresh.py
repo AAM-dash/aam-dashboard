@@ -85,8 +85,20 @@ def load_entities(name):
     return d
 
 # ---------------- sales (full rebuild from CSV) ----------------
+# Add-ons that do not belong to a course (upgrades, bumps, certificates) are grouped as 'Other',
+# and never decide which course an order belongs to.
+ADDON_RE = re.compile(r'upgrade|bump|certificaat|certificate', re.I)
+
+def is_addon(p):
+    return bool(ADDON_RE.search(p or ''))
+
+def order_group(products):
+    main = [p for p in products if not is_addon(p)]
+    return product_group(main[0]) if main else 'Other'
+
 def product_group(p):
     s = p.lower()
+    if is_addon(p): return 'Other'
     if 'verlatingsangst' in s or 'samen sterk' in s or 'implementatie' in s:
         return 'Verlatingsangst (NL)'
     if 'separation' in s: return 'Separation Anxiety (EN)'
@@ -152,7 +164,7 @@ def _parse_sales_file(path, src):
                 'country': (row.get('Country') or '').strip(),
                 'currency': (row.get('Currency') or 'eur').strip().lower(),
                 'amount': amount, 'sek': sek,
-                'products': prods, 'group': product_group(prods[0]) if prods else 'Other',
+                'products': prods, 'group': order_group(prods),
                 'refunded': (row.get('refunded') or '0').strip() not in ('0', '', 'none'),
             })
     return orders, bad_dates
@@ -190,7 +202,7 @@ def _parse_thrivecart(path):
                                     'net': [], 'gross': [], 'products': []})
         g['net'].append(net); g['gross'].append(gross)
         if item and item not in g['products']: g['products'].append(item)
-        if item and net >= g.get('top_amt', 0): g['top_amt'], g['top'] = net, item
+        if item and not is_addon(item) and net >= g.get('top_amt', 0): g['top_amt'], g['top'] = net, item
     orders = []
     for g in groups.values():
         dt, cur = g['dt'], g['currency']
@@ -205,7 +217,7 @@ def _parse_thrivecart(path):
                        'products': g['products'],
                        # the course is the most expensive line, so an upgrade or certificate
                        # listed first does not turn the order into 'Other'
-                       'group': product_group(g['products'][0]) if g['products'] else 'Other',
+                       'group': order_group(g['products']),
                        'refunded': False})
     return orders, dict(skipped)
 
@@ -271,7 +283,7 @@ def rebuild_sales(payload):
         for m in payload.get('makeOrders', []):
             dt = datetime.fromisoformat(m['ts'])
             new_orders.append({**m, 'dt': dt, 'date': dt.strftime('%Y-%m-%d'), 'src': 'make-cached',
-                               'group': product_group(m['products'][0]) if m['products'] else 'Other'})
+                               'group': order_group(m['products'])})
         if new_orders:
             print(f"sales2.csv missing — reusing {len(new_orders)} cached Make orders from payload")
     if os.path.exists(p1) and len(old_orders) < 50:  # sanity guard: broken export must not wipe history
@@ -336,7 +348,7 @@ def rebuild_sales(payload):
         for m in payload.get('tcOrders', []):
             dt = datetime.fromisoformat(m['ts'])
             tc_added.append({**m, 'dt': dt, 'date': dt.strftime('%Y-%m-%d'), 'src': 'thrivecart-cached',
-                             'group': product_group(m['products'][0]) if m['products'] else 'Other'})
+                             'group': order_group(m['products'])})
         tc_added = [n for n in tc_added if not _is_dup(n, by_email.get(n['email'], []))]
         if tc_added:
             print(f"thrivecart_raw.json missing - reusing {len(tc_added)} cached ThriveCart orders")
