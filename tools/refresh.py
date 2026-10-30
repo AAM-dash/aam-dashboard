@@ -261,7 +261,10 @@ def merge_meta_daily(payload):
     fresh_dates = set()
     for e in ents:
         d = meta_date(e['date_start'])
-        merged[d] = {'d': d, 'spend': sek(e.get('amount_spent')), 'imp': num(e.get('impressions')), 'clicks': num(e.get('clicks'))}
+        row = {'d': d, 'spend': sek(e.get('amount_spent')), 'imp': num(e.get('impressions')), 'clicks': num(e.get('clicks'))}
+        if e.get('leads') is not None:
+            row['leads'] = num(e.get('leads'))
+        merged[d] = row
         fresh_dates.add(d)
     # zero-fill covered window days Meta omitted (no delivery), so old ghost values can't linger
     if fresh_dates:

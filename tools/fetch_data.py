@@ -181,24 +181,31 @@ def fetch_meta_daily():
         print("skip meta_daily_raw.json: no META_ACCESS_TOKEN/META_AD_ACCOUNT_ID")
         return
     since = (TODAY - timedelta(days=40)).isoformat()
+    LEAD_TYPES = {"lead", "complete_registration", "offsite_conversion.fb_pixel_lead",
+                  "offsite_conversion.fb_pixel_complete_registration", "onsite_conversion.lead_grouped"}
     rows = meta_paginate(
         f"act_{META_ACCOUNT}/insights",
         {
             "level": "account",
             "time_range": json.dumps({"since": since, "until": TODAY.isoformat()}),
             "time_increment": "1",
-            "fields": "spend,impressions,clicks,date_start",
+            "fields": "spend,impressions,clicks,actions,date_start",
         },
     )
-    out = [
-        {
+    out = []
+    for r in rows:
+        leads = 0
+        for a in r.get("actions") or []:
+            if a.get("action_type") in LEAD_TYPES:
+                try: leads += int(float(a.get("value", 0)))
+                except (TypeError, ValueError): pass
+        out.append({
             "date_start": fmt_meta_date(r["date_start"]),
             "amount_spent": r.get("spend", "0"),
             "impressions": r.get("impressions", "0"),
             "clicks": r.get("clicks", "0"),
-        }
-        for r in rows
-    ]
+            "leads": leads,
+        })
     save_json("meta_daily_raw.json", out)
 
 

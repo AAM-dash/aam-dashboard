@@ -108,7 +108,11 @@
   .fstage .fc { font-size:12px; color:var(--ink-3); margin-top:5px; }
 
   .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
-  @media (max-width: 860px) { .grid2 { grid-template-columns: 1fr; } }
+  @media (max-width: 860px) { .grid2 { grid-template-columns: 1fr; } #signals { grid-template-columns: 1fr !important; } }
+  .sig { border-radius:10px; padding:11px 13px; font-size:12.5px; line-height:1.5; border:1px solid var(--border); }
+  .sig b { display:block; margin-bottom:3px; font-size:13px; }
+  .sig.bad { background: rgba(208,59,59,0.08); }
+  .sig.good { background: rgba(12,163,12,0.08); }
   .note { font-size:12px; color:var(--ink-3); margin-top:10px; line-height:1.5; }
   footer.site { margin-top:22px; font-size:12px; color:var(--ink-3); line-height:1.6; }
 
@@ -165,9 +169,23 @@
   </section>
 
   <section class="card">
+    <h2>This week in ads <span class="sub">(last 7 days vs the 7 days before)</span></h2>
+    <div class="note" id="metaStaleNote" style="margin:0 0 10px; display:none;"></div>
+    <div class="tiles" id="weekTiles"></div>
+    <h2 style="margin-top:16px;">Signals to act on</h2>
+    <div id="signals" style="display:grid; grid-template-columns:1fr 1fr; gap:10px;"></div>
+  </section>
+
+  <section class="card">
     <h2>Revenue &amp; ad spend per day <span class="sub">(SEK, shared axis)</span></h2>
     <div class="legend" id="revLegend"></div>
     <div class="chartWrap" id="revChart"></div>
+  </section>
+
+  <section class="card">
+    <h2>Does more budget help? <span class="sub">(daily ad spend vs leads — last 90 days of ad activity)</span></h2>
+    <div class="tiles" id="budgetTiles"></div>
+    <div class="note">Leads (guide downloads / registrations) respond to ads the same day, so cost per lead is comparable across budget levels. Sales often land weeks later, so judge budget on lead cost here and on ROAS over longer ranges above.</div>
   </section>
 
   <div class="grid2">
@@ -670,6 +688,111 @@ function renderSales() {
 
 // ---------- orchestration ----------
 let current = { preset: "d7" };
+// ---------- week-over-week ads + signals + budget panel ----------
+function metaWindows() {
+  // anchor on the newest day with Meta data, so an expired token still shows the last real weeks
+  const md = DATA.meta.daily;
+  const lastMeta = md.length ? md[md.length - 1].d : null;
+  const today = stockholmToday();
+  const stale = lastMeta && daysBetween(lastMeta, today) - 1 > 3;
+  const anchor = stale ? lastMeta : today;
+  return { t1: [addDays(anchor, -6), anchor], t0: [addDays(anchor, -13), addDays(anchor, -7)], stale, lastMeta };
+}
+function sumMetaLeads(from, to) {
+  let leads = 0, has = false;
+  for (const d of DATA.meta.daily) {
+    if (d.d < from || d.d > to) continue;
+    if (typeof d.leads === "number") { has = true; leads += d.leads; }
+  }
+  return has ? leads : null;
+}
+function renderWeekAds() {
+  const { t1, t0, stale, lastMeta } = metaWindows();
+  const warn = document.getElementById("metaStaleNote");
+  if (stale) {
+    warn.style.display = "block"; warn.style.color = "var(--bad-text)";
+    esc(warn, `⚠ Meta data ends ${lastMeta} — the access token has likely expired, so these cards show the last available weeks. Renew the token to resume live ad data.`);
+  }
+  const m1 = sumMeta(...t1), m0 = sumMeta(...t0);
+  const s1 = sumSales(...t1), s0 = sumSales(...t0);
+  const l1 = sumMetaLeads(...t1), l0 = sumMetaLeads(...t0);
+  const el = document.getElementById("weekTiles"); el.innerHTML = "";
+  const cpm = m => m.imp ? m.spend / m.imp * 1000 : null;
+  const cpc = m => m.clicks ? m.spend / m.clicks : null;
+  const ctr = m => m.imp ? m.clicks / m.imp * 100 : null;
+  const add = (lbl, v1, v0, fmt, upGood) => {
+    const d = (v1 != null && v0 != null && v0 !== 0) ? deltaEl(v1, v0, { upGood }) : null;
+    el.append(tile(lbl, v1 == null ? "—" : fmt(v1), d, null));
+  };
+  add("Ad spend", m1.spend, m0.spend, fmtSek, true);
+  add("CPM", cpm(m1), cpm(m0), v => v.toFixed(2) + " kr", false);
+  add("CPC", cpc(m1), cpc(m0), v => v.toFixed(2) + " kr", false);
+  add("CTR", ctr(m1), ctr(m0), v => v.toFixed(2) + "%", true);
+  if (l1 != null || l0 != null) {
+    add("Leads", l1, l0, fmtInt, true);
+    add("Cost per lead", l1 ? m1.spend / l1 : null, l0 ? m0.spend / l0 : null, v => v.toFixed(0) + " kr", false);
+  }
+  add("Orders", s1.orders, s0.orders, fmtInt, true);
+  add("ROAS", m1.spend ? s1.rev / m1.spend : null, m0.spend ? s0.rev / m0.spend : null, v => v.toFixed(2) + "×", true);
+
+  // signals
+  const sigs = [];
+  const pct = (a, b) => b ? (a - b) / b * 100 : null;
+  if (stale) sigs.push(["bad", "Meta connection down", `No ad data since ${lastMeta}. The Marketing API token has probably expired — generate a new one and update the META_ACCESS_TOKEN secret.`]);
+  if (m1.spend === 0 && m0.spend > 500) sigs.push(["bad", "Ads stopped", "No ad spend in the last window while the previous week was spending. Check campaign status and budgets."]);
+  const cpl1 = l1 ? m1.spend / l1 : null, cpl0 = l0 ? m0.spend / l0 : null;
+  if (cpl1 && cpl0) {
+    const ch = pct(cpl1, cpl0);
+    if (ch > 15) sigs.push(["bad", "Cost per lead rising", `From ${cpl0.toFixed(0)} to ${cpl1.toFixed(0)} kr (+${ch.toFixed(0)}%). Check whether it's the click (CTR/CPC) or the landing page.`]);
+    else if (ch < -15) sigs.push(["good", "Cost per lead falling", `From ${cpl0.toFixed(0)} to ${cpl1.toFixed(0)} kr (${ch.toFixed(0)}%). Room to scale budget carefully.`]);
+  }
+  const ctr1 = ctr(m1), ctr0 = ctr(m0);
+  if (ctr1 != null && ctr0) {
+    const ch = pct(ctr1, ctr0);
+    if (ch < -10) sigs.push(["bad", "Clickthrough dropping", `CTR ${ctr0.toFixed(2)}% → ${ctr1.toFixed(2)}% (${ch.toFixed(0)}%). Creatives may be wearing out.`]);
+    else if (ch > 10) sigs.push(["good", "Clickthrough improving", `CTR ${ctr0.toFixed(2)}% → ${ctr1.toFixed(2)}% (+${ch.toFixed(0)}%).`]);
+    else sigs.push(["good", "Click behaviour stable", `CTR ${ctr1.toFixed(2)}% vs ${ctr0.toFixed(2)}% the week before, CPC ${cpc(m1) ? cpc(m1).toFixed(2) : "—"} kr.`]);
+  }
+  const g = DATA.kit.growth;
+  if (g && g.d7 && g.d30 && g.d7.cancelled > 40 && g.d7.cancelled > 2.5 * (g.d30.cancelled / 30 * 7)) {
+    sigs.push(["bad", "Unsubscribe spike", `${fmtInt(g.d7.cancelled)} unsubscribed in 7 days vs ~${fmtInt(Math.round(g.d30.cancelled / 30 * 7))} in a normal week.`]);
+  }
+  if (!sigs.length) sigs.push(["good", "All quiet", "No anomalies in the last 7 days."]);
+  const host = document.getElementById("signals"); host.innerHTML = "";
+  for (const [cls, title, text] of sigs.slice(0, 4)) {
+    const d = document.createElement("div"); d.className = "sig " + cls;
+    const b = document.createElement("b"); esc(b, title); d.append(b);
+    d.append(document.createTextNode(text)); host.append(d);
+  }
+}
+function renderBudgetPanel() {
+  const el = document.getElementById("budgetTiles"); el.innerHTML = "";
+  const active = DATA.meta.daily.filter(d => d.spend > 0).slice(-90);
+  if (active.length < 10) { const p = document.createElement("div"); p.className = "note"; esc(p, "Not enough ad-active days yet."); el.append(p); return; }
+  const sal = Object.fromEntries(DATA.sales.daily.map(x => [x.date, x]));
+  const hasLeads = active.some(d => typeof d.leads === "number");
+  const bands = [[0, 500, "< 500 kr/day"], [500, 1200, "500–1,200 kr/day"], [1200, 2000, "1,200–2,000 kr/day"], [2000, 3000, "2,000–3,000 kr/day"], [3000, 1e9, "> 3,000 kr/day"]];
+  for (const [lo, hi, lbl] of bands) {
+    const days = active.filter(d => d.spend >= lo && d.spend < hi);
+    if (days.length < 5) continue;
+    const spend = days.reduce((a, d) => a + d.spend, 0);
+    const unit = hasLeads ? days.reduce((a, d) => a + (d.leads || 0), 0) : days.reduce((a, d) => a + d.clicks, 0);
+    const orders = days.reduce((a, d) => a + ((sal[d.d] || {}).orders || 0), 0);
+    const t = document.createElement("div"); t.className = "tile";
+    const l = document.createElement("div"); l.className = "lbl"; esc(l, lbl + " · " + days.length + " days");
+    const v = document.createElement("div"); v.className = "val";
+    esc(v, unit ? (spend / unit).toFixed(hasLeads ? 0 : 2) + " kr" : "—");
+    const sub = document.createElement("div"); sub.className = "delta";
+    esc(sub, (hasLeads ? "per lead · " : "per click · ") + (unit / days.length).toFixed(1) + (hasLeads ? " leads/day" : " clicks/day") + " · " + (orders / days.length).toFixed(1) + " orders/day");
+    t.append(l, v, sub); el.append(t);
+  }
+  if (!hasLeads) {
+    const p = document.createElement("div"); p.className = "note";
+    esc(p, "Shown per click for now — lead counts appear automatically once the Meta token is renewed.");
+    el.append(p);
+  }
+}
+
 function applyRange(preset, from, to) {
   current = { preset, from, to };
   const [f, t] = preset === "custom" ? [from, to] : rangeFor(preset);
@@ -710,6 +833,8 @@ function init() {
     `All amounts in SEK — sales use the actual settlement amounts from ThriveCart (EUR order values shown as secondary; €1 ≈ ${DATA.fx.eurSek.toFixed(2)} kr). All times Europe/Stockholm.`);
   renderSales();
   renderAdTree();
+  renderWeekAds();
+  renderBudgetPanel();
   applyRange("d7");
 
   document.querySelectorAll(".chip[data-range]").forEach(btn => {
