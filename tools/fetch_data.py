@@ -133,7 +133,9 @@ def fetch_sales_csv():
                 timeout=60,
             )
             r.raise_for_status()
-            save_text(fname, r.text)
+            # Drive sends text/csv without a charset; requests then guesses Latin-1 and turns
+            # '€497.00' into 'â\x82¬497.00', which parsed as amount 0. The export is UTF-8.
+            save_text(fname, r.content.decode('utf-8-sig'))
         except Exception as e:
             # a 403/404 here usually means the sheet is not shared with the
             # service account yet; refresh.py keeps previous data for it

@@ -107,7 +107,9 @@ def parse_products(cell):
     return [p.strip() for p in re.split(r',\s*&\s*', inner) if p.strip()]
 
 def money(v):
-    v = re.sub(r'[€£$]|kr|SEK|USD|GBP|EUR', '', v or '', flags=re.I).replace(',', '').strip()
+    # keep only digits, sign and decimal point, so a stray currency sign or mis-decoded
+    # euro symbol can never turn a real amount into 0
+    v = re.sub(r'[^0-9.\-]', '', (v or '').replace(',', ''))
     try: return float(v) if v else 0.0
     except ValueError: return 0.0
 
