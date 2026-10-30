@@ -13,6 +13,8 @@ Env vars:
   GOOGLE_SERVICE_ACCOUNT_JSON  full JSON key content for a service account with
                                 Viewer access to the sales Google Sheet
   SALES_SHEET_ID                Google Sheet file id for the ThriveCart sales export
+  THRIVECART_API_KEY            ThriveCart API token (Settings -> API & webhooks); pulls every
+                                transaction incl. rebills/instalments -> work/thrivecart_raw.json
 
 Any missing var -> that source is skipped (refresh.py keeps previous data for it).
 """
@@ -136,6 +138,61 @@ def fetch_sales_csv():
             # a 403/404 here usually means the sheet is not shared with the
             # service account yet; refresh.py keeps previous data for it
             print(f"WARN {fname}: {e}")
+
+
+# ---------------- ThriveCart API (all transactions, incl. rebills) ----------------
+def fetch_thrivecart():
+    """Pull every ThriveCart transaction straight from the API, so payments that
+    Zapier (free-plan task cap) or Make missed are still captured.
+    Stage 1: raw fetch + PII-free shape summary in the log. refresh.py does not use
+    this file yet. Never raises: a failure here must not break the refresh."""
+    key = os.environ.get("THRIVECART_API_KEY")
+    if not key:
+        print("skip thrivecart_raw.json: no THRIVECART_API_KEY")
+        return
+    import time
+    from collections import Counter
+    url = "https://thrivecart.com/api/external/transactions"
+    headers = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
+    rows, page, total = [], 1, None
+    try:
+        while page <= 300:  # hard stop, 30k transactions
+            params = {"page": page, "perPage": 100, "query": "", "transactionType": "any", "currency": ""}
+            for attempt in range(4):
+                r = requests.get(url, headers=headers, params=params, timeout=60)
+                if r.status_code == 429:  # API limit is 60 requests/minute
+                    time.sleep(20)
+                    continue
+                break
+            r.raise_for_status()
+            data = r.json()
+            batch = data.get("transactions") or []
+            if total is None:
+                total = (data.get("meta") or {}).get("total")
+            rows.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+            time.sleep(1.1)
+    except Exception as e:
+        print(f"WARN thrivecart: {type(e).__name__}: {str(e)[:200]} (pages fetched: {page - 1})")
+        if not rows:
+            return
+    save_json("thrivecart_raw.json", {"transactions": rows, "meta_total": total})
+    # PII-free summary (no names/emails) so the shape can be verified from the log
+    print(f"thrivecart: {len(rows)} transactions over {page} page(s), meta.total={total}")
+    if rows:
+        print("thrivecart fields:", sorted(rows[0].keys()))
+        print("thrivecart by type:", dict(Counter(str(x.get('transaction_type')) for x in rows)))
+        print("thrivecart by currency:", dict(Counter(str(x.get('currency')) for x in rows)))
+        print("thrivecart products:", dict(Counter(str(x.get('base_product')) for x in rows).most_common(25)))
+        stamps = [x.get('timestamp') for x in rows if isinstance(x.get('timestamp'), int)]
+        if stamps:
+            print("thrivecart range:", datetime.fromtimestamp(min(stamps), TZ).date(), "->", datetime.fromtimestamp(max(stamps), TZ).date())
+        amts = [x.get('amount') for x in rows if isinstance(x.get('amount'), (int, float))]
+        if amts:
+            print("thrivecart amount min/median/max:", min(amts), sorted(amts)[len(amts)//2], max(amts))
+        print("thrivecart sample (no PII):", {k: v for k, v in rows[0].items() if k not in ('customer',)})
 
 
 # ---------------- Meta ----------------
@@ -310,6 +367,7 @@ def main():
     fetch_kit_growth()
     fetch_kit_broadcasts()
     fetch_sales_csv()
+    fetch_thrivecart()
 
     if META_TOKEN and META_ACCOUNT:
         cmap, smap, _ = meta_entity_maps()

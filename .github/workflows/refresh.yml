@@ -35,6 +35,7 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           SALES_SHEET_ID: "1dK0T2KJJ5JOPXidnCfuWEhg8kWmOuViezPdCwCD99xk"
           SALES_SHEET_ID_2: "1pa1z9amci5R5A9jnan_gnO88baFeeYIh3Xux8d5dvYk"
+          THRIVECART_API_KEY: ${{ secrets.THRIVECART_API_KEY }}
         run: python3 tools/fetch_data.py
 
       - name: Rebuild encrypted dashboard
