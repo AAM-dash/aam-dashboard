@@ -21,7 +21,7 @@ Inputs in ./work/ (all optional except sales.csv — missing files keep old data
 Usage: cd tools && python3 refresh.py
 """
 import base64, csv, hashlib, json, os, re, statistics, sys
-from collections import defaultdict, Counter
+from collections import defaultdict
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 
@@ -155,59 +155,6 @@ def _parse_sales_file(path, src):
             })
     return orders, bad_dates
 
-
-def _parse_thrivecart(path):
-    """ThriveCart API transactions -> order dicts. Only 'charge' and 'rebill' are money
-    received (failed/finish/cancel/paused/pnding/refund are not). Amounts are in cents;
-    amount_gross includes VAT, matching the gross amounts in both sheets. A single order
-    can have several rows (main product + bump) sharing an order_id, so rows are grouped
-    per order_id + day into one order, like a sheet row."""
-    with open(path, encoding='utf-8') as f:
-        raw = json.load(f).get('transactions', [])
-    groups, skipped = {}, defaultdict(int)
-    for t in raw:
-        tt = str(t.get('transaction_type') or '')
-        if tt not in ('charge', 'rebill'):
-            skipped[tt] += 1; continue
-        email = ((t.get('customer') or {}).get('email') or '').strip().lower()
-        name = ((t.get('customer') or {}).get('name') or '').strip()
-        item = (t.get('item_name') or '').strip()
-        if '+test' in email or item.lower() == 'test': skipped['test'] += 1; continue
-        try:
-            gross = float(t.get('amount_gross') or t.get('amount') or 0) / 100.0
-            dt = datetime.fromtimestamp(int(t['timestamp']), TZ).replace(tzinfo=None)
-        except (TypeError, ValueError, KeyError):
-            skipped['bad row'] += 1; continue
-        if gross <= 0: skipped['zero amount'] += 1; continue
-        key = (str(t.get('order_id') or t.get('event_id')), dt.strftime('%Y-%m-%d'), tt)
-        g = groups.setdefault(key, {'dt': dt, 'name': name, 'email': email,
-                                    'currency': str(t.get('currency') or 'eur').lower(),
-                                    'rows': [], 'products': [], 'type': tt})
-        g['rows'].append(gross)
-        if item and item not in g['products']: g['products'].append(item)
-    orders = []
-    for g in groups.values():
-        dt, cur = g['dt'], g['currency']
-        total = round(sum(g['rows']), 2)
-        orders.append({'date': dt.strftime('%Y-%m-%d'), 'ts': dt.isoformat(), 'dt': dt, 'src': 'thrivecart',
-                       'name': g['name'], 'email': g['email'], 'country': '', 'currency': cur,
-                       'amount': total, 'sek': total if cur == 'sek' else 0.0,
-                       'parts': g['rows'], 'products': g['products'],
-                       'group': product_group(g['products'][0]) if g['products'] else 'Other',
-                       'refunded': False})
-    return orders, dict(skipped)
-
-def _is_dup(n, candidates):
-    """Same email, within 2 days, and the same gross amount (as the whole order or as one
-    of its parts, e.g. when a sheet row records only the main product)."""
-    for o in candidates:
-        if abs((o['dt'] - n['dt']).total_seconds()) > 2 * 86400: continue
-        amounts = [n['amount']] + list(n.get('parts', []))
-        if n['currency'] == 'sek' or (o['currency'] != 'eur' and o['sek'] > 0 and n['sek'] > 0):
-            if abs(o['sek'] - n['sek']) <= 2: return True
-        elif any(abs(o['amount'] - a) <= 0.5 for a in amounts): return True
-    return False
-
 def rebuild_sales(payload):
     p1 = os.path.join(WORK, "sales.csv")   # legacy Zapier sheet (history + rebills)
     p2 = os.path.join(WORK, "sales2.csv")  # Make.com sheet (Aug-Oct 2026)
@@ -248,51 +195,10 @@ def rebuild_sales(payload):
             elif abs(o['amount'] - n['amount']) <= 0.5: dup = True; break
         if dup: dropped += 1
         else: deduped.append(n)
-    # Third source: ThriveCart API (every charge and rebill; the sheets miss some because
-    # of the Zapier free-plan task cap and the Make instalment gap). Only payments the
-    # sheets do not already have are added; matched ones keep the sheet row, which holds
-    # the real SEK amount. Added orders are cached in the payload, so a refresh where the
-    # API cannot be reached does not silently lose them (they are re-checked against the
-    # sheets every time, so a sheet that catches up never double counts).
-    p3 = os.path.join(WORK, "thrivecart_raw.json")
-    sheet_orders = old_orders + deduped
-    by_email = defaultdict(list)
-    for o in sheet_orders: by_email[o['email']].append(o)
-    tc_added, tc_total, tc_skipped = [], 0, {}
-    if os.path.exists(p3):
-        tc_orders, tc_skipped = _parse_thrivecart(p3)
-        tc_total = len(tc_orders)
-        tc_added = [n for n in tc_orders if not _is_dup(n, by_email.get(n['email'], []))]
-        payload['tcOrders'] = [
-            {k: o[k] for k in ('ts','name','email','country','currency','amount','sek','products','refunded','parts')}
-            for o in tc_added]
-        # reconcile report (no names / emails)
-        win_start = min((n['dt'] for n in tc_orders), default=None)
-        sheet_only = [o for o in sheet_orders if win_start and o['dt'] >= win_start
-                      and not _is_dup(o, [n for n in tc_orders if n['email'] == o['email']])] if tc_orders else []
-        added_by_month = defaultdict(lambda: [0, 0.0])
-        for n in tc_added:
-            m = added_by_month[n['date'][:7]]; m[0] += 1; m[1] += n['amount']
-        print(f"thrivecart merge: {tc_total} payments, {tc_total - len(tc_added)} already in the sheets, "
-              f"{len(tc_added)} added; ignored rows: {tc_skipped}")
-        print("thrivecart added per month (count, gross EUR):",
-              {k: (v[0], round(v[1])) for k, v in sorted(added_by_month.items())})
-        print("thrivecart added by type:", dict(Counter(n['group'] for n in tc_added)))
-        print("thrivecart products -> group:", dict(sorted({(pr, product_group(pr)) for n in tc_orders for pr in n['products']})[:40]))
-        print(f"sheet orders in the same period with no ThriveCart match: {len(sheet_only)}")
-    else:
-        for m in payload.get('tcOrders', []):
-            dt = datetime.fromisoformat(m['ts'])
-            tc_added.append({**m, 'dt': dt, 'date': dt.strftime('%Y-%m-%d'), 'src': 'thrivecart-cached',
-                             'group': product_group(m['products'][0]) if m['products'] else 'Other'})
-        tc_added = [n for n in tc_added if not _is_dup(n, by_email.get(n['email'], []))]
-        if tc_added:
-            print(f"thrivecart_raw.json missing - reusing {len(tc_added)} cached ThriveCart orders")
-    orders = sheet_orders + tc_added
-    for o in orders: o.pop('dt', None); o.pop('parts', None)
+    orders = old_orders + deduped
+    for o in orders: o.pop('dt', None)
     print(f"sales merge: {len(old_orders)} zapier + {len(new_orders)} make "
-          f"({dropped} duplicates dropped, {old_bad + new_bad} rows skipped for bad dates) "
-          f"+ {len(tc_added)} thrivecart")
+          f"({dropped} duplicates dropped, {old_bad + new_bad} rows skipped for bad dates)")
     orders.sort(key=lambda o: o['ts'])
     fx_rows = [o['sek']/o['amount'] for o in orders if o['currency'] == 'eur' and o['amount'] > 0 and o['sek'] > 0]
     fx = round(statistics.median(fx_rows[-40:]), 4) if fx_rows else payload.get('fx', {}).get('eurSek', 11.0)

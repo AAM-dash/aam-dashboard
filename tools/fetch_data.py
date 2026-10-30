@@ -175,9 +175,9 @@ def fetch_thrivecart():
             page += 1
             time.sleep(1.1)
     except Exception as e:
-        # incomplete data must not replace the cached orders downstream: save nothing
-        print(f"WARN thrivecart: {type(e).__name__}: {str(e)[:200]} (pages fetched: {page - 1}); not saving partial data")
-        return
+        print(f"WARN thrivecart: {type(e).__name__}: {str(e)[:200]} (pages fetched: {page - 1})")
+        if not rows:
+            return
     save_json("thrivecart_raw.json", {"transactions": rows, "meta_total": total})
     # PII-free summary (no names/emails) so the shape can be verified from the log
     print(f"thrivecart: {len(rows)} transactions over {page} page(s), meta.total={total}")
@@ -185,7 +185,7 @@ def fetch_thrivecart():
         print("thrivecart fields:", sorted(rows[0].keys()))
         print("thrivecart by type:", dict(Counter(str(x.get('transaction_type')) for x in rows)))
         print("thrivecart by currency:", dict(Counter(str(x.get('currency')) for x in rows)))
-        print("thrivecart items:", dict(Counter(str(x.get('item_name')) for x in rows if x.get('transaction_type') in ('charge', 'rebill')).most_common(30)))
+        print("thrivecart products:", dict(Counter(str(x.get('base_product')) for x in rows).most_common(25)))
         stamps = [x.get('timestamp') for x in rows if isinstance(x.get('timestamp'), int)]
         if stamps:
             print("thrivecart range:", datetime.fromtimestamp(min(stamps), TZ).date(), "->", datetime.fromtimestamp(max(stamps), TZ).date())
