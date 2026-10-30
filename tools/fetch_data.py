@@ -133,7 +133,9 @@ def fetch_sales_csv():
                 timeout=60,
             )
             r.raise_for_status()
-            save_text(fname, r.text)
+            # Drive sends text/csv without a charset; requests then guesses Latin-1 and turns
+            # '€497.00' into 'â\x82¬497.00', which parsed as amount 0. The export is UTF-8.
+            save_text(fname, r.content.decode('utf-8-sig'))
         except Exception as e:
             # a 403/404 here usually means the sheet is not shared with the
             # service account yet; refresh.py keeps previous data for it
@@ -175,9 +177,9 @@ def fetch_thrivecart():
             page += 1
             time.sleep(1.1)
     except Exception as e:
-        print(f"WARN thrivecart: {type(e).__name__}: {str(e)[:200]} (pages fetched: {page - 1})")
-        if not rows:
-            return
+        # incomplete data must not replace the cached orders downstream: save nothing
+        print(f"WARN thrivecart: {type(e).__name__}: {str(e)[:200]} (pages fetched: {page - 1}); not saving partial data")
+        return
     save_json("thrivecart_raw.json", {"transactions": rows, "meta_total": total})
     # PII-free summary (no names/emails) so the shape can be verified from the log
     print(f"thrivecart: {len(rows)} transactions over {page} page(s), meta.total={total}")
@@ -185,7 +187,7 @@ def fetch_thrivecart():
         print("thrivecart fields:", sorted(rows[0].keys()))
         print("thrivecart by type:", dict(Counter(str(x.get('transaction_type')) for x in rows)))
         print("thrivecart by currency:", dict(Counter(str(x.get('currency')) for x in rows)))
-        print("thrivecart products:", dict(Counter(str(x.get('base_product')) for x in rows).most_common(25)))
+        print("thrivecart items:", dict(Counter(str(x.get('item_name')) for x in rows if x.get('transaction_type') in ('charge', 'rebill')).most_common(30)))
         stamps = [x.get('timestamp') for x in rows if isinstance(x.get('timestamp'), int)]
         if stamps:
             print("thrivecart range:", datetime.fromtimestamp(min(stamps), TZ).date(), "->", datetime.fromtimestamp(max(stamps), TZ).date())
