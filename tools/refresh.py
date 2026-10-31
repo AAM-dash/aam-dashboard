@@ -393,6 +393,16 @@ def rebuild_sales(payload):
         if o['currency'] != 'eur' and o['sek'] > 0:
             o['amount'] = round(o['sek']/fx, 2)
         o['sek_val'] = o['sek'] if o['sek'] > 0 else round(o['amount']*fx, 2)
+    # PII-free reconciliation of 2026 by source, in EUR (compare with ThriveCart's gross revenue)
+    by_src = defaultdict(lambda: [0, 0.0, 0.0, 0])
+    for o in orders:
+        if o['date'][:4] != '2026': continue
+        b = by_src[o['src']]; b[0] += 1; b[1] += o['amount'] if o['currency'] == 'eur' else 0.0
+        b[2] += o['sek_val']; b[3] += 1 if o['sek'] <= 0 else 0
+    tot = [sum(v[i] for v in by_src.values()) for i in range(4)]
+    print("recon 2026 by source (orders, EUR, SEK, orders with estimated SEK):",
+          {k: (v[0], round(v[1]), round(v[2]), v[3]) for k, v in by_src.items()},
+          "TOTAL", (tot[0], round(tot[1]), round(tot[2]), tot[3]))
     daily = defaultdict(lambda: {'rev':0.0,'orders':0,'refunds':0,'refund_amt':0.0,'byp':defaultdict(float)})
     for o in orders:
         d = daily[o['date']]
