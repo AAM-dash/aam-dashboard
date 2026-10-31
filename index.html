@@ -476,13 +476,17 @@ function renderProducts(sal) {
 // ---------- funnel ----------
 function renderFunnel(from, to, preset, sal, met) {
   const el = document.getElementById("funnel"); el.innerHTML = "";
-  const kitG = preset && DATA.kit.growth[preset] ? DATA.kit.growth[preset] : null;
-  const newSubs = kitG ? kitG.new : null;
+  // Cohort: people who joined Kit with a Facebook-ad tag in this range, and how many of those bought.
+  const kc = DATA.kitCohort;
+  const cd = kc ? kc.days.filter(x => x.d >= from && x.d <= to) : null;
+  const fbSubs = cd ? cd.reduce((a, x) => a + x.n, 0) : null;
+  const fbBuyers = cd ? cd.reduce((a, x) => a + x.bought, 0) : null;
+  const fbRev = cd ? cd.reduce((a, x) => a + x.rev, 0) : 0;
   const stages = [
     { l: "Link clicks", v: met.clicks, c: "var(--seq-250)" },
     { l: "Landing page views", v: met.hasLpv ? met.lpv : null, c: "var(--seq-350, var(--seq-250))", rate: true },
-    { l: "New subscribers", v: newSubs, c: "var(--seq-450)" },
-    { l: "Orders", v: sal.orders, c: "var(--seq-650)" },
+    { l: "Facebook sign-ups (new in Kit)", v: fbSubs, c: "var(--seq-450)" },
+    { l: "…of whom bought", v: fbBuyers, c: "var(--seq-650)", cohort: true },
   ];
   for (let i=0;i<stages.length;i++) {
     const s = stages[i];
@@ -496,13 +500,21 @@ function renderFunnel(from, to, preset, sal, met) {
       esc(fc, (s.v / met.clicks * 100).toFixed(1) + "% of link clicks");
       d.append(fc);
     }
+    if (s.cohort && fbSubs > 0) {
+      const fc = document.createElement("div"); fc.className = "fc";
+      esc(fc, (s.v / fbSubs * 100).toFixed(1) + "% of these sign-ups");
+      d.append(fc);
+    }
     el.append(d);
   }
   const note = document.getElementById("funnelNote");
   const parts = [];
-  parts.push("Subscribers and orders in the same period are different groups of people (buyers are often already on the list), so no conversion rate is shown between them.");
-  if (sal.orders > 0 && met.spend > 0) parts.push("Ad spend per order (all orders, not only ad-driven): " + fmtSek(met.spend / sal.orders));
-  if (newSubs == null) parts.push("Subscriber counts are available for the preset ranges (Kit reports growth per period, not per day — custom ranges will fill in as the dashboard builds its own history).");
+  if (!kc) parts.push("Facebook sign-up data is not available yet.");
+  else {
+    if (fbSubs >= 10) parts.push("Revenue per Facebook sign-up: " + fmtSek(fbRev / fbSubs));
+    parts.push("Sign-ups are people who joined Kit with a Facebook-ad tag in this period; 'bought' counts those with a course-participant tag or a later order, as of today, so recent sign-ups are still maturing. Total orders in the period (" + fmtInt(sal.orders) + ") also include people from outside this group.");
+    if (sal.orders > 0 && met.spend > 0) parts.push("Ad spend per order (all orders, not only ad-driven): " + fmtSek(met.spend / sal.orders));
+  }
   esc(note, parts.join(" · "));
 }
 

@@ -490,7 +490,31 @@ def rebuild_sales(payload):
               for o in orders[-12:]][::-1]
     payload['sales'] = {'daily': out, 'recent': recent}
     payload['fx'] = {'eurSek': fx}
+    build_cohort(payload, orders)
     return len(orders)
+
+
+def build_cohort(payload, orders):
+    """True cohort funnel: subscribers who joined Kit with a Facebook-ad tag, per join day, and
+    how many of those people bought (course-participant tag or a later order on the same email)."""
+    kc = load("kit_cohort.json")
+    if not kc: return
+    by_email = defaultdict(list)
+    for o in orders:
+        if o['email'] and not o['refunded']: by_email[o['email'].lower()].append(o)
+    tagged = set(kc.get('buyers', []))
+    days = {}
+    for r in kc['ad']:
+        e, d0 = r['email'], r['d']
+        later = [o for o in by_email.get(e, []) if o['date'] >= d0]
+        d = days.setdefault(d0, {'d': d0, 'n': 0, 'bought': 0, 'rev': 0.0})
+        d['n'] += 1
+        if e in tagged or later: d['bought'] += 1
+        d['rev'] += sum(o['sek_val'] for o in later)
+    out = sorted(days.values(), key=lambda x: x['d'])
+    for d in out: d['rev'] = round(d['rev'], 2)
+    payload['kitCohort'] = {'days': out, 'tags': kc.get('adTags', [])}
+    print(f"cohort: {sum(d['n'] for d in out)} ad subscribers, {sum(d['bought'] for d in out)} bought")
 
 # ---------------- merge sections ----------------
 def merge_kit(payload):

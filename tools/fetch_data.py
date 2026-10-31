@@ -83,6 +83,58 @@ def fetch_kit_growth():
     save_json("kit_growth.json", {"subscribers_total": subs_total, "growth": growth})
 
 
+def fetch_kit_cohort():
+    """Subscribers carrying a Facebook-ad tag (with the date they joined Kit) and the emails of
+    everyone with a course-participant tag. Written to work/ (gitignored) for refresh.py, which
+    only publishes per-day counts. Tag patterns can be overridden with env vars."""
+    if not KIT_KEY:
+        print("skip kit_cohort.json: no KIT_API_KEY")
+        return
+    ad_re = re.compile(os.environ.get("KIT_AD_TAG_REGEX", r"(facebook|\bfb\b)\s*ad"), re.I)
+    buyer_re = re.compile(os.environ.get("KIT_BUYER_TAG_REGEX", r"deelname|participant|^geluidsangst 2026$"), re.I)
+    try:
+        tags, after = [], None
+        while True:
+            data = kit_get("/tags", {"per_page": 1000, **({"after": after} if after else {})})
+            tags += data["tags"]
+            pg = data.get("pagination", {})
+            if not pg.get("has_next_page"): break
+            after = pg["end_cursor"]
+
+        def subs_for(tag_id):
+            out, after = [], None
+            while True:
+                data = kit_get(f"/tags/{tag_id}/subscribers",
+                               {"per_page": 1000, **({"after": after} if after else {})})
+                out += data["subscribers"]
+                pg = data.get("pagination", {})
+                if not pg.get("has_next_page"): return out
+                after = pg["end_cursor"]
+
+        ad_tags = [t for t in tags if ad_re.search(t["name"])]
+        buyer_tags = [t for t in tags if buyer_re.search(t["name"])]
+        ad, buyers = {}, set()
+        for t in ad_tags:
+            for sub in subs_for(t["id"]):
+                em = (sub.get("email_address") or "").strip().lower()
+                if em and sub.get("created_at"):
+                    ad[em] = sub["created_at"]
+        for t in buyer_tags:
+            for sub in subs_for(t["id"]):
+                em = (sub.get("email_address") or "").strip().lower()
+                if em: buyers.add(em)
+        rows = [{"email": e, "d": datetime.fromisoformat(c.replace("Z", "+00:00")).astimezone(TZ).date().isoformat()}
+                for e, c in ad.items()]
+        print(f"kit cohort: {len(ad_tags)} ad tags, {len(buyer_tags)} buyer tags, "
+              f"{len(rows)} ad subscribers, {len(buyers)} tagged buyers")
+        print("kit ad tags:", sorted(t["name"] for t in ad_tags))
+        print("kit buyer tags:", sorted(t["name"] for t in buyer_tags))
+        save_json("kit_cohort.json", {"ad": rows, "buyers": sorted(buyers),
+                                      "adTags": sorted(t["name"] for t in ad_tags)})
+    except Exception as e:
+        print(f"kit cohort failed ({type(e).__name__}); keeping previous data")
+
+
 def fetch_kit_broadcasts():
     if not KIT_KEY:
         print("skip broadcasts_raw.json: no KIT_API_KEY")
@@ -393,6 +445,7 @@ def fetch_meta_adtree(smap):
 
 def main():
     fetch_kit_growth()
+    fetch_kit_cohort()
     fetch_kit_broadcasts()
     fetch_sales_csv()
     fetch_thrivecart()
