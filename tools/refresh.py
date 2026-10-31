@@ -157,6 +157,9 @@ def _parse_sales_file(path, src):
             else:
                 amount = money(row['Amount'])
                 sek = money(row.get('Payment amount', ''))
+            # a payment in SEK with no separate SEK column: the amount IS the SEK value.
+            # Otherwise it was read as euros and multiplied by the exchange rate (~11x too high).
+            if (row.get('Currency') or '').strip().lower() == 'sek' and sek <= 0: sek = amount
             if amount <= 0 and sek <= 0: continue
             orders.append({
                 'date': dt.strftime('%Y-%m-%d'), 'ts': dt.isoformat(), 'dt': dt, 'src': src,
