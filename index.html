@@ -99,7 +99,7 @@
   .avgRow td { color: var(--ink-2); font-weight:600; border-top: 1px solid var(--baseline); }
 
   /* ---------- funnel ---------- */
-  .funnel { display:grid; grid-template-columns: repeat(3, 1fr); gap:10px; }
+  .funnel { display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; }
   @media (max-width:640px){ .funnel { grid-template-columns:1fr; } }
   .fstage { border:1px solid var(--border); border-radius:10px; padding:12px 14px; position:relative; }
   .fstage .bar { height:6px; border-radius:4px; margin-bottom:9px; }
@@ -480,8 +480,9 @@ function renderFunnel(from, to, preset, sal, met) {
   const newSubs = kitG ? kitG.new : null;
   const stages = [
     { l: "Link clicks", v: met.clicks, c: "var(--seq-250)" },
+    { l: "Landing page views", v: met.hasLpv ? met.lpv : null, c: "var(--seq-350, var(--seq-250))", rate: true },
     { l: "New subscribers", v: newSubs, c: "var(--seq-450)" },
-    { l: "Buyers (orders)", v: sal.orders, c: "var(--seq-650)" },
+    { l: "Orders", v: sal.orders, c: "var(--seq-650)" },
   ];
   for (let i=0;i<stages.length;i++) {
     const s = stages[i];
@@ -489,22 +490,18 @@ function renderFunnel(from, to, preset, sal, met) {
     const bar = document.createElement("div"); bar.className = "bar"; bar.style.background = s.c; d.append(bar);
     const fv = document.createElement("div"); fv.className = "fv"; esc(fv, s.v == null ? "—" : fmtInt(s.v)); d.append(fv);
     const fl = document.createElement("div"); fl.className = "fl"; esc(fl, s.l); d.append(fl);
-    const prev = stages[i-1];
-    if (i > 0 && prev.v && s.v != null && s.v <= prev.v) {
+    // Only click -> landing page view is the same group of people; no other step gets a percentage.
+    if (s.rate && s.v != null && met.clicks > 0) {
       const fc = document.createElement("div"); fc.className = "fc";
-      esc(fc, (s.v / prev.v * 100).toFixed(1) + "% of previous stage");
-      d.append(fc);
-    } else if (i > 0 && prev.v != null && s.v != null && s.v > prev.v) {
-      const fc = document.createElement("div"); fc.className = "fc";
-      esc(fc, "more buyers than new subscribers — sales came from the existing list");
+      esc(fc, (s.v / met.clicks * 100).toFixed(1) + "% of link clicks");
       d.append(fc);
     }
     el.append(d);
   }
   const note = document.getElementById("funnelNote");
   const parts = [];
-  if (newSubs != null && newSubs >= 10) parts.push("Revenue per new subscriber: " + fmtSek(sal.rev / newSubs));
-  if (sal.orders > 0 && met.spend > 0) parts.push("Cost per sale: " + fmtSek(met.spend / sal.orders));
+  parts.push("Subscribers and orders in the same period are different groups of people (buyers are often already on the list), so no conversion rate is shown between them.");
+  if (sal.orders > 0 && met.spend > 0) parts.push("Ad spend per order (all orders, not only ad-driven): " + fmtSek(met.spend / sal.orders));
   if (newSubs == null) parts.push("Subscriber counts are available for the preset ranges (Kit reports growth per period, not per day — custom ranges will fill in as the dashboard builds its own history).");
   esc(note, parts.join(" · "));
 }
