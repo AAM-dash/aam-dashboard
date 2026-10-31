@@ -511,6 +511,10 @@ function renderFunnel(from, to, preset, sal, met) {
   const parts = [];
   if (!kc) parts.push("Facebook sign-up data is not available yet.");
   else {
+    if (fbSubs === 0) {
+      const lastTagged = kc.days.length ? kc.days[kc.days.length - 1].d : null;
+      parts.push("No Facebook-tagged sign-ups in this period" + (lastTagged ? " (the latest was on " + lastTagged + ")" : "") + ". Sign-ups from a source without a Facebook-ad tag, such as the quiz, are not counted here.");
+    }
     if (fbSubs >= 10) parts.push("Revenue per Facebook sign-up: " + fmtSek(fbRev / fbSubs));
     parts.push("Sign-ups are people who joined Kit with a Facebook-ad tag in this period; 'bought' counts those with a course-participant tag or a later order, as of today, so recent sign-ups are still maturing. Total orders in the period (" + fmtInt(sal.orders) + ") also include people from outside this group.");
     if (sal.orders > 0 && met.spend > 0) parts.push("Ad spend per order (all orders, not only ad-driven): " + fmtSek(met.spend / sal.orders));
