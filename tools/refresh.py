@@ -528,6 +528,8 @@ def merge_meta_daily(payload):
         row = {'d': d, 'spend': sek(e.get('amount_spent')), 'imp': num(e.get('impressions')), 'clicks': num(e.get('clicks'))}
         if e.get('leads') is not None:
             row['leads'] = num(e.get('leads'))
+        if e.get('lpv') is not None:
+            row['lpv'] = num(e.get('lpv'))
         merged[d] = row
         fresh_dates.add(d)
     # zero-fill covered window days Meta omitted (no delivery), so old ghost values can't linger
@@ -537,7 +539,7 @@ def merge_meta_daily(payload):
         while d <= TODAY:
             k = d.isoformat()
             if k not in fresh_dates and k in merged and k >= lo:
-                merged[k] = {'d': k, 'spend': 0, 'imp': 0, 'clicks': 0}
+                merged[k] = {'d': k, 'spend': 0, 'imp': 0, 'clicks': 0, 'lpv': 0}
             d += timedelta(days=1)
     payload['meta']['daily'] = sorted(merged.values(), key=lambda e: e['d'])
 

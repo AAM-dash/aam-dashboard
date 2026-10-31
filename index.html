@@ -312,10 +312,11 @@ function sumSales(from, to) {
   return out;
 }
 function sumMeta(from, to) {
-  const out = { spend:0, imp:0, clicks:0, days:[] };
+  const out = { spend:0, imp:0, clicks:0, lpv:0, hasLpv:false, days:[] };
   for (const d of DATA.meta.daily) {
     if (d.d < from || d.d > to) continue;
     out.spend += d.spend; out.imp += d.imp; out.clicks += d.clicks; out.days.push(d);
+    if (d.lpv != null) { out.lpv += d.lpv; out.hasLpv = true; }
   }
   return out;
 }
@@ -478,7 +479,7 @@ function renderFunnel(from, to, preset, sal, met) {
   const kitG = preset && DATA.kit.growth[preset] ? DATA.kit.growth[preset] : null;
   const newSubs = kitG ? kitG.new : null;
   const stages = [
-    { l: "Ad clicks", v: met.clicks, c: "var(--seq-250)" },
+    { l: "Link clicks", v: met.clicks, c: "var(--seq-250)" },
     { l: "New subscribers", v: newSubs, c: "var(--seq-450)" },
     { l: "Buyers (orders)", v: sal.orders, c: "var(--seq-650)" },
   ];
@@ -571,7 +572,7 @@ function renderMeta(from, to, met) {
   esc(document.getElementById("metaRangeNote"), label);
   const tbl = document.getElementById("adTable"); tbl.innerHTML = "";
   const head = document.createElement("tr");
-  for (const [h, num] of [["Campaign"],["Status"],["Spend",1],["Impressions",1],["Clicks",1],["CTR",1],["CPC",1]]) {
+  for (const [h, num] of [["Campaign"],["Status"],["Spend",1],["Impressions",1],["Link clicks",1],["Link CTR",1],["Cost/link click",1]]) {
     const th = document.createElement("th"); if (num) th.className="num"; esc(th, h); head.append(th);
   }
   tbl.append(head);
@@ -586,7 +587,7 @@ function renderMeta(from, to, met) {
     tbl.append(tr);
   }
   const note = document.getElementById("metaNote");
-  let txt = `Total spend in the selected range: ${met.spend.toLocaleString("en-GB",{minimumFractionDigits:2,maximumFractionDigits:2})} kr · ${fmtInt(met.imp)} impressions · ${fmtInt(met.clicks)} clicks.`;
+  let txt = `Total spend in the selected range: ${met.spend.toLocaleString("en-GB",{minimumFractionDigits:2,maximumFractionDigits:2})} kr · ${fmtInt(met.imp)} impressions · ${fmtInt(met.clicks)} link clicks.`;
   if (met.spend === 0) txt += " No ad delivery in this range — the campaign table shows the most recent period with data.";
   const dataStart = DATA.meta.daily.length ? DATA.meta.daily[0].d : null;
   if (dataStart && from < dataStart) txt += ` Note: ad data starts ${dataStart}; spend before that date is not included.`;
@@ -614,7 +615,7 @@ function renderAdTree() {
     const star = document.createElement("span"); esc(star, "★ "); star.style.color = "var(--s4)";
     const b = document.createElement("b"); esc(b, a.name);
     const rest = document.createElement("span"); rest.style.color = "var(--ink-2)";
-    esc(rest, ` is your best ${type.toLowerCase()} creative — ${a.cpr.toFixed(0)} kr per result at ${fmtPct(a.ctr)} CTR (in ${a.adset}, ${a.campaign})`);
+    esc(rest, ` is your best ${type.toLowerCase()} creative — ${a.cpr.toFixed(0)} kr per result at ${fmtPct(a.ctr)} link CTR (in ${a.adset}, ${a.campaign})`);
     p.append(star, b, rest); tops.append(p);
   }
 
@@ -637,7 +638,7 @@ function renderAdTree() {
     const scroll = document.createElement("div"); scroll.className = "tblScroll";
     const tbl = document.createElement("table"); tbl.style.marginTop = "8px";
     const head = document.createElement("tr");
-    for (const [h, num] of [["Ad set / creative"],["Status"],["Spend",1],["CTR",1],["CPC",1],["Results",1],["Cost/result",1],["Suggestion"]]) {
+    for (const [h, num] of [["Ad set / creative"],["Status"],["Spend",1],["Link CTR",1],["Cost/link click",1],["Results",1],["Cost/result",1],["Suggestion"]]) {
       const th = document.createElement("th"); if (num) th.className = "num"; if (h === "Suggestion") th.style.paddingLeft = "14px"; esc(th, h); head.append(th);
     }
     tbl.append(head);
@@ -726,8 +727,12 @@ function renderWeekAds() {
   };
   add("Ad spend", m1.spend, m0.spend, fmtSek, true);
   add("CPM", cpm(m1), cpm(m0), v => v.toFixed(2) + " kr", false);
-  add("CPC", cpc(m1), cpc(m0), v => v.toFixed(2) + " kr", false);
-  add("CTR", ctr(m1), ctr(m0), v => v.toFixed(2) + "%", true);
+  add("Cost / link click", cpc(m1), cpc(m0), v => v.toFixed(2) + " kr", false);
+  add("Link CTR", ctr(m1), ctr(m0), v => v.toFixed(2) + "%", true);
+  if (m1.hasLpv || m0.hasLpv) {
+    add("Landing page views", m1.lpv, m0.lpv, fmtInt, true);
+    add("Page-load rate", m1.clicks ? m1.lpv / m1.clicks * 100 : null, m0.clicks ? m0.lpv / m0.clicks * 100 : null, v => v.toFixed(0) + "%", true);
+  }
   if (l1 != null || l0 != null) {
     add("Leads", l1, l0, fmtInt, true);
     add("Cost per lead", l1 ? m1.spend / l1 : null, l0 ? m0.spend / l0 : null, v => v.toFixed(0) + " kr", false);
@@ -746,12 +751,16 @@ function renderWeekAds() {
     if (ch > 15) sigs.push(["bad", "Cost per lead rising", `From ${cpl0.toFixed(0)} to ${cpl1.toFixed(0)} kr (+${ch.toFixed(0)}%). Check whether it's the click (CTR/CPC) or the landing page.`]);
     else if (ch < -15) sigs.push(["good", "Cost per lead falling", `From ${cpl0.toFixed(0)} to ${cpl1.toFixed(0)} kr (${ch.toFixed(0)}%). Room to scale budget carefully.`]);
   }
+  if (m1.hasLpv && m1.clicks >= 100) {
+    const rate = m1.lpv / m1.clicks;
+    if (rate < 0.6) sigs.push(["bad", "Page loads", `Only about ${Math.round(rate * 100)}% of link clicks become a landing page view (${fmtInt(m1.clicks)} clicks, ${fmtInt(m1.lpv)} views). Check that the page loads quickly and the pixel fires; the rest are lost before they see it.`]);
+  }
   const ctr1 = ctr(m1), ctr0 = ctr(m0);
   if (ctr1 != null && ctr0) {
     const ch = pct(ctr1, ctr0);
-    if (ch < -10) sigs.push(["bad", "Clickthrough dropping", `CTR ${ctr0.toFixed(2)}% → ${ctr1.toFixed(2)}% (${ch.toFixed(0)}%). Creatives may be wearing out.`]);
-    else if (ch > 10) sigs.push(["good", "Clickthrough improving", `CTR ${ctr0.toFixed(2)}% → ${ctr1.toFixed(2)}% (+${ch.toFixed(0)}%).`]);
-    else sigs.push(["good", "Click behaviour stable", `CTR ${ctr1.toFixed(2)}% vs ${ctr0.toFixed(2)}% the week before, CPC ${cpc(m1) ? cpc(m1).toFixed(2) : "—"} kr.`]);
+    if (ch < -10) sigs.push(["bad", "Clickthrough dropping", `Link CTR ${ctr0.toFixed(2)}% → ${ctr1.toFixed(2)}% (${ch.toFixed(0)}%). Creatives may be wearing out.`]);
+    else if (ch > 10) sigs.push(["good", "Clickthrough improving", `Link CTR ${ctr0.toFixed(2)}% → ${ctr1.toFixed(2)}% (+${ch.toFixed(0)}%).`]);
+    else sigs.push(["good", "Click behaviour stable", `Link CTR ${ctr1.toFixed(2)}% vs ${ctr0.toFixed(2)}% the week before, ${cpc(m1) ? cpc(m1).toFixed(2) : "—"} kr per link click.`]);
   }
   const g = DATA.kit.growth;
   if (g && g.d7 && g.d30 && g.d7.cancelled > 40 && g.d7.cancelled > 2.5 * (g.d30.cancelled / 30 * 7)) {
@@ -815,7 +824,7 @@ function applyRange(preset, from, to) {
   const roas = met.spend > 0 ? sal.rev / met.spend : null;
   tiles.append(tile("ROAS", roas == null ? "—" : roas.toFixed(2) + "×", null));
   tiles.append(tile("Cost per sale", (met.spend > 0 && sal.orders > 0) ? fmtSek(met.spend/sal.orders) : "—", null));
-  tiles.append(tile("Ad clicks", fmtInt(met.clicks), deltaEl(met.clicks, pmet.clicks)));
+  tiles.append(tile("Link clicks", fmtInt(met.clicks), deltaEl(met.clicks, pmet.clicks)));
 
   renderRevChart(f, t);
   renderProducts(sal);

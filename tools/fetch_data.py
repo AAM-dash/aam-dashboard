@@ -231,6 +231,36 @@ def meta_entity_maps():
     )
 
 
+LPV_TYPES = {"landing_page_view"}
+
+
+def action_total(actions, types):
+    n = 0
+    for a in actions or []:
+        if a.get("action_type") in types:
+            try: n += int(float(a.get("value", 0)))
+            except (TypeError, ValueError): pass
+    return n
+
+
+def link_metrics(r):
+    """Meta's plain clicks/ctr/cpc count EVERY click (reactions, profile, 'see more'...).
+    What advertisers compare against is link clicks, so the dashboard's clicks, ctr and cpc
+    are the link-click versions; the all-clicks values are kept as all_*."""
+    link = r.get("inline_link_clicks")
+    if link is None:  # field absent (e.g. zero link clicks): that really is 0 link clicks
+        link = "0"
+    return {
+        "clicks": link,
+        "ctr": r.get("inline_link_click_ctr", "0"),
+        "cpc": r.get("cost_per_inline_link_click", "0"),
+        "all_clicks": r.get("clicks", "0"),
+        "all_ctr": r.get("ctr", "0"),
+        "all_cpc": r.get("cpc", "0"),
+        "lpv": action_total(r.get("actions"), LPV_TYPES),
+    }
+
+
 def fmt_meta_date(iso_date):
     return datetime.strptime(iso_date, "%Y-%m-%d").strftime("%B %d, %Y")
 
@@ -239,7 +269,7 @@ def fetch_meta_daily():
     if not (META_TOKEN and META_ACCOUNT):
         print("skip meta_daily_raw.json: no META_ACCESS_TOKEN/META_AD_ACCOUNT_ID")
         return
-    since = (TODAY - timedelta(days=40)).isoformat()
+    since = (TODAY - timedelta(days=300)).isoformat()  # whole history, so every day uses link clicks
     LEAD_TYPES = {"lead", "complete_registration", "offsite_conversion.fb_pixel_lead",
                   "offsite_conversion.fb_pixel_complete_registration", "onsite_conversion.lead_grouped"}
     rows = meta_paginate(
@@ -248,7 +278,7 @@ def fetch_meta_daily():
             "level": "account",
             "time_range": json.dumps({"since": since, "until": TODAY.isoformat()}),
             "time_increment": "1",
-            "fields": "spend,impressions,clicks,actions,date_start",
+            "fields": "spend,impressions,clicks,inline_link_clicks,actions,date_start",
         },
     )
     out = []
@@ -262,7 +292,9 @@ def fetch_meta_daily():
             "date_start": fmt_meta_date(r["date_start"]),
             "amount_spent": r.get("spend", "0"),
             "impressions": r.get("impressions", "0"),
-            "clicks": r.get("clicks", "0"),
+            "clicks": r.get("inline_link_clicks", "0"),
+            "all_clicks": r.get("clicks", "0"),
+            "lpv": action_total(r.get("actions"), LPV_TYPES),
             "leads": leads,
         })
     save_json("meta_daily_raw.json", out)
@@ -277,7 +309,7 @@ def fetch_meta_campaigns(preset, fname, cmap):
         {
             "level": "campaign",
             "date_preset": preset,
-            "fields": "campaign_id,spend,impressions,clicks,ctr,cpc,reach",
+            "fields": "campaign_id,spend,impressions,clicks,ctr,cpc,inline_link_clicks,inline_link_click_ctr,cost_per_inline_link_click,actions,reach",
         },
     )
     out = []
@@ -291,9 +323,7 @@ def fetch_meta_campaigns(preset, fname, cmap):
                 "status": status,
                 "amount_spent": r.get("spend", "0"),
                 "impressions": r.get("impressions", "0"),
-                "clicks": r.get("clicks", "0"),
-                "ctr": r.get("ctr", "0"),
-                "cpc": r.get("cpc", "0"),
+                **link_metrics(r),
                 "reach": r.get("reach", "0"),
             }
         )
@@ -311,7 +341,7 @@ def fetch_meta_adtree(smap):
         {
             "level": "adset",
             "date_preset": "last_90d",
-            "fields": "adset_id,spend,impressions,clicks,ctr,cpc,reach,frequency",
+            "fields": "adset_id,spend,impressions,clicks,ctr,cpc,inline_link_clicks,inline_link_click_ctr,cost_per_inline_link_click,actions,reach,frequency",
             "sort": "spend_descending",
         },
     )
@@ -326,9 +356,7 @@ def fetch_meta_adtree(smap):
                 "status": status,
                 "amount_spent": r.get("spend", "0"),
                 "impressions": r.get("impressions", "0"),
-                "clicks": r.get("clicks", "0"),
-                "ctr": r.get("ctr", "0"),
-                "cpc": r.get("cpc", "0"),
+                **link_metrics(r),
                 "reach": r.get("reach", "0"),
                 "frequency": r.get("frequency", "0"),
             }
@@ -340,7 +368,7 @@ def fetch_meta_adtree(smap):
         {
             "level": "ad",
             "date_preset": "last_90d",
-            "fields": "ad_id,ad_name,adset_id,campaign_id,spend,impressions,clicks,ctr,cpc",
+            "fields": "ad_id,ad_name,adset_id,campaign_id,spend,impressions,clicks,ctr,cpc,inline_link_clicks,inline_link_click_ctr,cost_per_inline_link_click,actions",
             "sort": "spend_descending",
         },
     )
@@ -355,9 +383,7 @@ def fetch_meta_adtree(smap):
                 "campaign_id": r.get("campaign_id"),
                 "amount_spent": r.get("spend", "0"),
                 "impressions": r.get("impressions", "0"),
-                "clicks": r.get("clicks", "0"),
-                "ctr": r.get("ctr", "0"),
-                "cpc": r.get("cpc", "0"),
+                **link_metrics(r),
                 "results": None,
                 "cost_per_result": None,
             }
