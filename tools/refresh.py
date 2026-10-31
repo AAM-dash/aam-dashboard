@@ -267,6 +267,43 @@ def _tc_diagnose(tc_orders, sheet_orders, tc_added):
     print(f"diag: ThriveCart payments unmatched {len(tc_un)}; email in sheets: {sum(1 for n in tc_un if n['email'] in sh_emails)}")
     print("diag: sheet email column sample shapes:", Counter(('has@' if '@' in o['email'] else 'no@', 'upper' if o['email'] != o['email'].lower() else 'lower') for o in sheet_orders[:200]))
 
+def _parse_tc_refunds(path):
+    """ThriveCart refund transactions -> [{email, dt, ts, vals}]. vals holds the ex-VAT and the
+    VAT-inclusive refunded amount (EUR), as the order it belongs to may carry either."""
+    with open(path, encoding='utf-8') as f:
+        raw = json.load(f).get('transactions', [])
+    out = []
+    for t in raw:
+        if str(t.get('transaction_type') or '') != 'refund': continue
+        email = ((t.get('customer') or {}).get('email') or '').strip().lower()
+        if '+test' in email: continue
+        try:
+            dt = datetime.fromtimestamp(int(t['timestamp']), TZ).replace(tzinfo=None)
+            net = abs(float(t.get('amount') or 0)) / 100.0
+            gross = abs(float(t.get('amount_gross') or t.get('amount') or 0)) / 100.0
+        except (TypeError, ValueError, KeyError):
+            continue
+        if max(net, gross) <= 0: continue
+        out.append({'email': email, 'dt': dt, 'ts': dt.isoformat(), 'vals': sorted({round(net, 2), round(gross, 2)})})
+    return out
+
+def _apply_refunds(orders, refunds):
+    """Mark the order each refund belongs to as refunded: same email, paid before the refund
+    (within a year), same amount (ex-VAT or incl. VAT); the latest such order wins. Partial
+    refunds do not match a whole order and are only reported."""
+    matched, unmatched = 0, []
+    by_email = defaultdict(list)
+    for o in orders: by_email[o['email']].append(o)
+    for rf in sorted(refunds, key=lambda x: x['dt']):
+        cands = [o for o in by_email.get(rf['email'], [])
+                 if not o['refunded'] and timedelta(days=-1) <= rf['dt'] - o['dt'] <= timedelta(days=400)
+                 and any(abs(a - v) <= 0.5 for a in [o['amount']] + list(o.get('alts', [])) for v in rf['vals'])]
+        if cands:
+            max(cands, key=lambda o: o['dt'])['refunded'] = True; matched += 1
+        else:
+            unmatched.append((rf['dt'].strftime('%Y-%m'), rf['vals'][-1]))
+    return matched, unmatched
+
 def _tc_processor_report(path):
     """PII-free log: 2026 ThriveCart payments by processor and month (gross EUR), and refunds,
     to reconcile the dashboard with Stripe's gross volume (which excludes PayPal and any
@@ -346,8 +383,11 @@ def rebuild_sales(payload):
     by_email = defaultdict(list)
     for o in sheet_orders: by_email[o['email']].append(o)
     tc_added, tc_total, tc_skipped = [], 0, {}
+    tc_orders, tc_refunds = [], []
     if os.path.exists(p3):
         tc_orders, tc_skipped = _parse_thrivecart(p3)
+        tc_refunds = _parse_tc_refunds(p3)
+        payload['tcRefunds'] = [{k: x[k] for k in ('email', 'ts', 'vals')} for x in tc_refunds]
         tc_total = len(tc_orders)
         tc_added = [n for n in tc_orders if not _is_dup(n, by_email.get(n['email'], []))]
         matched = tc_total - len(tc_added)
@@ -377,6 +417,8 @@ def rebuild_sales(payload):
         print("thrivecart products -> group:", dict(sorted({(pr, product_group(pr)) for n in tc_orders for pr in n['products']})[:40]))
         print(f"sheet orders in the same period with no ThriveCart match: {len(sheet_only)}")
     else:
+        for x in payload.get('tcRefunds', []):
+            tc_refunds.append({**x, 'dt': datetime.fromisoformat(x['ts'])})
         for m in payload.get('tcOrders', []):
             dt = datetime.fromisoformat(m['ts'])
             tc_added.append({**m, 'dt': dt, 'date': dt.strftime('%Y-%m-%d'), 'src': 'thrivecart-cached',
@@ -385,6 +427,20 @@ def rebuild_sales(payload):
         if tc_added:
             print(f"thrivecart_raw.json missing - reusing {len(tc_added)} cached ThriveCart orders")
     orders = sheet_orders + tc_added
+    # Orders without a SEK amount are estimated from euros. Where ThriveCart has the same payment,
+    # use its VAT-inclusive euro amount (a sheet row sometimes holds only the price before VAT).
+    fixed = 0
+    for o in orders:
+        if o['sek'] > 0 or o['currency'] != 'eur' or o['src'].startswith('thrivecart'): continue
+        for n in tc_orders:
+            if n['email'] == o['email'] and n['currency'] == 'eur' and _is_dup(n, [o]):
+                if abs(n['amount'] - o['amount']) > 0.5: fixed += 1
+                o['amount'] = n['amount']; break
+    if fixed: print(f"estimated orders re-based on ThriveCart's VAT-inclusive amount: {fixed}")
+    if tc_refunds:
+        ok, bad = _apply_refunds(orders, tc_refunds)
+        print(f"refunds: {len(tc_refunds)} in ThriveCart, {ok} matched to an order, {len(bad)} not matched "
+              f"(partial or no equal payment found; month, EUR): {bad}")
     for o in orders: o.pop('dt', None); o.pop('alts', None)
     print(f"sales merge: {len(old_orders)} zapier + {len(new_orders)} make "
           f"({dropped} duplicates dropped, {old_bad + new_bad} rows skipped for bad dates) "
@@ -392,10 +448,18 @@ def rebuild_sales(payload):
     orders.sort(key=lambda o: o['ts'])
     fx_rows = [o['sek']/o['amount'] for o in orders if o['currency'] == 'eur' and o['amount'] > 0 and o['sek'] > 0]
     fx = round(statistics.median(fx_rows[-40:]), 4) if fx_rows else payload.get('fx', {}).get('eurSek', 11.0)
+    # an order with no SEK amount is converted at its own month's rate, taken from that month's
+    # orders that do have one (ratios outside 9.5-12.5 are mismatches such as ex-VAT vs incl. VAT)
+    mrates = defaultdict(list)
+    for o in orders:
+        if o['currency'] == 'eur' and o['amount'] > 0 and o['sek'] > 0 and 9.5 <= o['sek']/o['amount'] <= 12.5:
+            mrates[o['date'][:7]].append(o['sek']/o['amount'])
+    month_fx = {m: round(statistics.median(v), 4) for m, v in mrates.items() if len(v) >= 5}
+    print("monthly SEK per EUR used for estimates:", dict(sorted(month_fx.items())[-12:]))
     for o in orders:
         if o['currency'] != 'eur' and o['sek'] > 0:
             o['amount'] = round(o['sek']/fx, 2)
-        o['sek_val'] = o['sek'] if o['sek'] > 0 else round(o['amount']*fx, 2)
+        o['sek_val'] = o['sek'] if o['sek'] > 0 else round(o['amount']*month_fx.get(o['date'][:7], fx), 2)
     # PII-free reconciliation of 2026 by source, in EUR (compare with ThriveCart's gross revenue)
     by_src = defaultdict(lambda: [0, 0.0, 0.0, 0])
     for o in orders:
