@@ -264,6 +264,34 @@ def _tc_diagnose(tc_orders, sheet_orders, tc_added):
     print(f"diag: ThriveCart payments unmatched {len(tc_un)}; email in sheets: {sum(1 for n in tc_un if n['email'] in sh_emails)}")
     print("diag: sheet email column sample shapes:", Counter(('has@' if '@' in o['email'] else 'no@', 'upper' if o['email'] != o['email'].lower() else 'lower') for o in sheet_orders[:200]))
 
+def _tc_processor_report(path):
+    """PII-free log: 2026 ThriveCart payments by processor and month (gross EUR), and refunds,
+    to reconcile the dashboard with Stripe's gross volume (which excludes PayPal and any
+    payments not processed through the Stripe account)."""
+    with open(path, encoding='utf-8') as f:
+        raw = json.load(f).get('transactions', [])
+    pay, ref = defaultdict(lambda: [0, 0.0]), defaultdict(lambda: [0, 0.0])
+    for t in raw:
+        tt = str(t.get('transaction_type') or '')
+        email = ((t.get('customer') or {}).get('email') or '').lower()
+        if '+test' in email or (t.get('item_name') or '').strip().lower() == 'test': continue
+        try:
+            dt = datetime.fromtimestamp(int(t['timestamp']), TZ)
+            eur = float(t.get('amount_gross') or t.get('amount') or 0) / 100.0
+        except (TypeError, ValueError, KeyError):
+            continue
+        if dt.year != 2026: continue
+        if tt in ('charge', 'rebill') and eur > 0:
+            k = (str(t.get('processor')), dt.strftime('%Y-%m')); pay[k][0] += 1; pay[k][1] += eur
+        elif tt == 'refund':
+            k = dt.strftime('%Y-%m'); ref[k][0] += 1; ref[k][1] += eur
+    byproc = defaultdict(lambda: [0, 0.0])
+    for (proc, _), v in pay.items(): byproc[proc][0] += v[0]; byproc[proc][1] += v[1]
+    print("report 2026 payments by processor (count, gross EUR):", {k: (v[0], round(v[1])) for k, v in byproc.items()})
+    print("report 2026 payments by processor and month (count, gross EUR):",
+          {f"{k[1]} {k[0]}": (v[0], round(v[1])) for k, v in sorted(pay.items(), key=lambda kv: (kv[0][1], kv[0][0]))})
+    print("report 2026 refunds by month (count, gross EUR):", {k: (v[0], round(v[1])) for k, v in sorted(ref.items())})
+
 def rebuild_sales(payload):
     p1 = os.path.join(WORK, "sales.csv")   # legacy Zapier sheet (history + rebills)
     p2 = os.path.join(WORK, "sales2.csv")  # Make.com sheet (Aug-Oct 2026)
@@ -321,6 +349,7 @@ def rebuild_sales(payload):
         tc_added = [n for n in tc_orders if not _is_dup(n, by_email.get(n['email'], []))]
         matched = tc_total - len(tc_added)
         _tc_diagnose(tc_orders, sheet_orders, tc_added)
+        _tc_processor_report(p3)
         if tc_total >= 50 and matched < 0.5 * tc_total:
             # the sheets cover most of these payments, so a low match rate means the matching
             # is broken (amount/currency/email format changed): add nothing rather than double count
