@@ -185,7 +185,7 @@
   <section class="card">
     <h2>Does more budget help? <span class="sub">(daily ad spend vs leads — last 90 days of ad activity)</span></h2>
     <div class="tiles" id="budgetTiles"></div>
-    <div class="note">Leads (guide downloads / registrations) respond to ads the same day, so cost per lead is comparable across budget levels. Sales often land weeks later, so judge budget on lead cost here and on ROAS over longer ranges above.</div>
+    <div class="note">Leads (guide downloads / registrations) respond to ads the same day, so cost per lead is comparable across budget levels. Sales often land weeks later and follow launches and emails more than daily ad spend, so orders are left out here: judge budget on lead cost, and on ROAS over longer ranges above. The two-week tile compares days inside the same stretch so launch phases do not distort it; it still cannot prove cause.</div>
   </section>
 
   <div class="grid2">
@@ -807,6 +807,36 @@ function renderBudgetPanel() {
     const sub = document.createElement("div"); sub.className = "delta";
     esc(sub, (hasLeads ? "per lead · " : "per click · ") + (unit / days.length).toFixed(1) + (hasLeads ? " leads/day" : " clicks/day") + " · " + (orders / days.length).toFixed(1) + " orders/day");
     t.append(l, v, sub); el.append(t);
+  }
+  // Fairer comparison: inside each 14-day block (same launch phase, same season), compare days
+  // with spend above the block median to days below it.
+  if (hasLeads) {
+    let dSpend = 0, dLeads = 0, hiS = 0, hiL = 0, hiD = 0, loS = 0, loL = 0, loD = 0, blocks = 0;
+    for (let i = 0; i + 14 <= active.length; i += 14) {
+      const blk = active.slice(i, i + 14), sorted = blk.map(d => d.spend).sort((a, b) => a - b);
+      const med = (sorted[6] + sorted[7]) / 2;
+      const hi = blk.filter(d => d.spend > med), lo = blk.filter(d => d.spend <= med);
+      if (hi.length < 3 || lo.length < 3) continue;
+      const avg = (a, k) => a.reduce((x, d) => x + (d[k] || 0), 0) / a.length;
+      dSpend += avg(hi, "spend") - avg(lo, "spend"); dLeads += avg(hi, "leads") - avg(lo, "leads");
+      for (const d of hi) { hiS += d.spend; hiL += d.leads || 0; hiD++; }
+      for (const d of lo) { loS += d.spend; loL += d.leads || 0; loD++; }
+      blocks++;
+    }
+    if (blocks >= 3 && hiL > 0 && loL > 0) {
+      const t = document.createElement("div"); t.className = "tile";
+      const l = document.createElement("div"); l.className = "lbl"; esc(l, "Same two weeks: higher- vs lower-spend days · " + blocks + " blocks");
+      const v = document.createElement("div"); v.className = "val";
+      const sub = document.createElement("div"); sub.className = "delta";
+      if (dLeads > 0 && dSpend > 0) {
+        esc(v, (dSpend / dLeads).toFixed(0) + " kr");
+        esc(sub, "per EXTRA lead on higher-spend days · average lead " + (loS / loL).toFixed(0) + " kr on lower-spend days (" + (loS / loD).toFixed(0) + " kr/day), " + (hiS / hiL).toFixed(0) + " kr on higher-spend days (" + (hiS / hiD).toFixed(0) + " kr/day)");
+      } else {
+        esc(v, "No extra leads");
+        esc(sub, "higher-spend days did not bring more leads than lower-spend days in the same two weeks");
+      }
+      t.append(l, v, sub); el.append(t);
+    }
   }
   if (!hasLeads) {
     const p = document.createElement("div"); p.className = "note";
