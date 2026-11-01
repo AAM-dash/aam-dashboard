@@ -805,7 +805,7 @@ function renderBudgetPanel() {
     const v = document.createElement("div"); v.className = "val";
     esc(v, unit ? (spend / unit).toFixed(hasLeads ? 0 : 2) + " kr" : "—");
     const sub = document.createElement("div"); sub.className = "delta";
-    esc(sub, (hasLeads ? "per lead · " : "per click · ") + (unit / days.length).toFixed(1) + (hasLeads ? " leads/day" : " clicks/day") + " · " + (orders / days.length).toFixed(1) + " orders/day");
+    esc(sub, (hasLeads ? "per lead · " : "per click · ") + (unit / days.length).toFixed(1) + (hasLeads ? " leads/day" : " clicks/day"));
     t.append(l, v, sub); el.append(t);
   }
   // Fairer comparison: inside each 14-day block (same launch phase, same season), compare days
